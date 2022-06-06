@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="phaser.min.js"></script>
+    <script src="Midi.min.js"></script>
+    <script src="Tone.min.js"></script>
+    <script src="StartAudioContext.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body style="background: #000; margin: 0;">
+    <!-- <button id="welcome" onclick="welcome()">Press to start</button> -->
+    <div id="controls">
+        <div class="image-upload">
+          <label for="filereader">
+            <img src="upload.png"/>
+            <!-- <span>Upload MIDI</span> -->
+          </label>
+
+          <input id="filereader" onchange="read_file(event)" type="file" accept=".mid" />
+        </div>
+
+        <button disabled id="welcome" onclick="playpause()" style="margin-left: 10vw;">
+            <img id="playpausebtn" src="play.png">
+        </button>
+
+        <button disabled id="rw" onclick="slowdown()" style="margin-left: 10vw;">
+            <img src="rw.png">
+        </button>
+        <button disabled id="reset" onclick="reset_speed()">
+            <img src="reset.png">
+            <!-- <span>Reset</span> -->
+        </button>
+        <button disabled id="ff" onclick="speedup()">
+            <img src="ff.png">
+            <!-- <span>Fast</span> -->
+        </button>
+
+    </div>
+    <div id="phaser-example"></div>
+    <script>
+        // better transport controls
+        // better font
+
+        StartAudioContext(Tone.context, "#playpausebtn")
+
+        var piano;
+
+        var config = {
+            type: Phaser.AUTO,
+            backgroundColor: '#121212',
+            scale: {
+                mode: Phaser.Scale.FIT,
+                autoCenter: Phaser.Scale.CENTER_BOTH,
+                width: 1600,
+                height: 900,
+                parent: 'phaser-example'
+            },
+            scene: {
+                preload: preload,
+                create: create,
+                update: update,
+            }
+        };
+
+        var MIDI_LOADED = false;
+        var TICKRATE = 1;
+        var update_delta = 0;
+        var RESET_TICKRATE = 1; 
+        var PAUSED = true;
+        var ACTIVE_TRACK = 0;
+        var triggered_notes = new Set();
+        var prev_active_keys = [];
+        var pause;
+        var play;
+
+        var graphics;
+        var statics;
+        var seek_rect;
+        var tick = 0;
+        var marker = 0;
+        var marker_set = false;
+        var display_tick;
+        var MIDI;
+        var colours = [
+        [0xA3D2CA, 0x5EAAA8],
+        [0xA685E2, 0x6155A6],
+        [0xF2AAAA, 0xE36387],
+        [0x8B5E83, 0xD6B0B1],
+        [0xA3D2CA, 0x5EAAA8],
+        [0xA685E2, 0x6155A6],
+        [0xF2AAAA, 0xE36387]
+        ]
+        var the_keys = Array(88).fill([])
+        
+        var game = new Phaser.Game(config);
+        var synth;
+        var sampler;
+
+        function welcome()
+        {
+            var w = document.getElementById("welcome")
+            w.style.display = "none";
+        }
+
+        function make_the_keys_map(){
+
+            const black = [1, 4, 6, 9, 11, 13, 16, 18, 21, 23, 25, 28, 30, 33, 35, 37, 40, 42, 45, 47, 49, 52, 54, 57, 59, 61, 64, 66, 69, 71, 73, 76, 78, 81, 83, 85];
+            const white = [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26, 27, 29, 31, 32, 34, 36, 38, 39, 41, 43, 44, 46, 48, 50, 51, 53, 55, 56, 58, 60, 62, 63, 65, 67, 68, 70, 72, 74, 75, 77, 79, 80, 82, 84, 86, 87];
+
+            for (let i = 0; i < 52; i++)
+            {
+                the_keys[white[i]] = [0, (i*30.7)+5, 760, 25, 135];
+            }
+
+            black_keys_order = [
+            'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y',
+            'n', 'y', 'y', 'n', 'y', 'y', 'y'
+            ];
+
+            counter = 0;
+
+            for (let i = 0; i < 52; i++)
+            {
+                if (black_keys_order[i] == 'y')
+                {
+                    the_keys[black[counter]] = [1, (i*30.7)+25, 760, 17, 90]
+                    counter ++
+                }
+            }  
+        }
+
+        function just_white()
+        {
+            graphics.fillStyle(0xffffff, 1);
+            for (key of the_keys)
+            {
+                if (key[0] === 0)
+                {
+                    graphics.fillRect(key[1], key[2], key[3], key[4])
+                }
+            }
+        }
+
+        function just_black()
+        {
+            graphics.fillStyle(0x222222, 1);
+            for (key of the_keys)
+            {
+                if (key[0] === 1)
+                {
+                    graphics.fillRect(key[1], key[2], key[3], key[4])
+                }
+            }
+        }
+
+        function read_file(e)
+        {
+            if (e.target.files.length > 0)
+            {
+                const reader = new FileReader();
+                reader.onload = function(e)
+                {
+                    in_midi = new Midi(e.target.result);
+
+                    out_midi = preprocess_midi(in_midi)
+                    MIDI = out_midi
+                    tick = 0
+                    MIDI_LOADED = true;
+
+                    document.getElementById("welcome").disabled = false;
+                    document.getElementById("ff").disabled = false;
+                    document.getElementById("reset").disabled = false;
+                    document.getElementById("rw").disabled = false;
+                    
+
+                    TICKRATE = (MIDI.durationTicks / MIDI.duration) / 60
+                    RESET_TICKRATE = (MIDI.durationTicks / MIDI.duration) / 60
+                    if (!PAUSED) {
+                        playpause();
+                    }
+                }
+
+                reader.readAsArrayBuffer(e.target.files[0]);
+            }
+        }
+
+
+        function preprocess_midi (in_midi)
+        {
+            console.log(in_midi)
+            // WHAT IS THE SHORTEST NOTE IN THE WHOLE PIECE?
+            var shortest_note = null;
+            // WHAT IS THE LEADING SILENCE TILL THE FIRST NOTE?
+            var ticks_to_first_note = null;
+
+            for (in_track of in_midi.tracks) {
+                for (in_note of in_track.notes) {
+                    if (shortest_note)
+                    {
+                        if (in_note.durationTicks < shortest_note && in_note.durationTicks > 5)
+                        {
+                            shortest_note = in_note.durationTicks;
+                        }
+                    } else {
+                        shortest_note = in_note.durationTicks
+                    }
+
+                    if (ticks_to_first_note === null)
+                    {
+                        ticks_to_first_note = in_note.ticks
+                    } else {
+                        if (in_note.ticks < ticks_to_first_note)
+                        {
+                            ticks_to_first_note = in_note.ticks;
+                        }
+                    }
+                }
+            }
+
+            // RESIZE THE ENTIRE MIDI BY NORMALISING THE SHORTEST NOTE TO BE 20px
+            resize_factor = 20 / shortest_note
+            // resize_factor = 0.1
+
+            end_midi = {
+                "tracks": [],
+                "duration": in_midi.duration,
+                "durationTicks": in_midi.durationTicks * resize_factor
+            }
+
+            for (in_track of in_midi.tracks)
+            {
+                if (in_track.notes.length > 0)
+                {
+                    out_notes = []
+
+                    for (in_note of in_track.notes)
+                    {
+                        out_note = {"midi": in_note.midi, "ticks": ((in_note.ticks - ticks_to_first_note) * resize_factor) - 450, "durationTicks": in_note.durationTicks * resize_factor - 8}
+
+                        out_notes.push(out_note)
+                    }
+                    
+                    out_track = {"notes": out_notes}
+                    end_midi.tracks.push(out_track)
+                }
+            }
+
+            console.log(end_midi)
+            return end_midi
+        }
+
+        function preload()
+        {
+            console.log('Copyright 2022 Keshav Kaushal')
+
+            synth = new Tone.PolySynth().toDestination();
+            sampler = new Tone.Sampler({
+                urls: {
+                    A0: "A0.mp3",
+                    C1: "C1.mp3",
+                    // "D#1": "Ds1.mp3",
+                    // "F#1": "Fs1.mp3",
+                    A1: "A1.mp3",
+                    C2: "C2.mp3",
+                    // "D#2": "Ds2.mp3",
+                    // "F#2": "Fs2.mp3",
+                    A2: "A2.mp3",
+                    C3: "C3.mp3",
+                    // "D#3": "Ds3.mp3",
+                    // "F#3": "Fs3.mp3",
+                    A3: "A3.mp3",
+                    C4: "C4.mp3",
+                    // "D#4": "Ds4.mp3",
+                    // "F#4": "Fs4.mp3",
+                    A4: "A4.mp3",
+                    C5: "C5.mp3",
+                    // "D#5": "Ds5.mp3",
+                    // "F#5": "Fs5.mp3",
+                    A5: "A5.mp3",
+                    C6: "C6.mp3",
+                    // "D#6": "Ds6.mp3",
+                    // "F#6": "Fs6.mp3",
+                    A6: "A6.mp3",
+                    C7: "C7.mp3",
+                    // "D#7": "Ds7.mp3",
+                    // "F#7": "Fs7.mp3",
+                    A7: "A7.mp3",
+                    C8: "C8.mp3"
+                },
+                release: 1,
+                baseUrl: "https://tonejs.github.io/audio/salamander/"
+            }).toDestination();
+        }
+
+
+        function create ()
+        {
+            seek_rect = this.add.graphics();
+            graphics = this.add.graphics();
+            statics = this.add.graphics();
+
+            make_the_keys_map();
+
+            // THE BARS TO HELP VIEWING NOTES
+            seek_rect.fillStyle(0xffffff, 0.5);
+            var c_line = 64
+            for (var i = 0; i < 8; i++) {
+                seek_rect.fillRect(c_line, 0, 2, 900);
+                c_line += 215
+            }
+            
+            seek_rect.fillStyle(0xffffff, 0.4);
+            var e_line = 156
+            for (var i = 0; i < 8; i++) {
+                seek_rect.fillRect(e_line, 0, 2, 900);
+                e_line += 215
+            }
+
+            graphics.fillStyle(0x000000, 1);
+            graphics.fillRect(0, 758, 1600, 142)
+            
+            just_white();
+            just_black();
+
+            // statics.fillStyle(0x121212, 1);
+            // statics.fillRect(0, 0, 1600, 100);
+
+            // SEEK BAR
+            // seeker = this.add.rectangle(800, 250, 1600, 2, 0xffffff, 0.2);
+            const y_button_position = 50;
+
+            // MARKERS
+            // place_marker = this.add.rectangle(400, 50, 80, 80, 0xffffff, 0.2)
+            // place_marker.setInteractive().on('pointerdown', () => fn_place_marker());
+            // this.add.image(400, 50, 'setmark')
+
+            // clear_marker = this.add.rectangle(500, 50, 80, 80, 0xffffff, 0.2)
+            // clear_marker.setInteractive().on('pointerdown', () => fn_clear_marker());
+            // this.add.image(500, 50, 'clear')
+
+            const opac = 0
+            // BACK AND FWD 5 SECS
+            back5 = this.add.rectangle(200, 500, 400, 500, 0xffffff, opac)
+            back5.setInteractive().on('pointerdown', () => back_5());
+
+            fwd5 = this.add.rectangle(1400, 500, 400, 500, 0xffffff, opac)
+            fwd5.setInteractive().on('pointerdown', () => fwd_5());
+
+            // PAUSE BTN
+            // pause_mid = this.add.rectangle(800, 500, 800, 500, 0xffffff, opac)
+            // pause_mid.setInteractive().on('pointerdown', () => playpause());
+
+            // CURRENT TICK
+            // display_tick = this.add.text(10, 135, tick, { font: "35px", fill: "#FFFFFF", align: "left"});
+
+            // UPLOAD
+            // upload_container = this.add.rectangle(50, 50, 80, 80, 0xffffff, 0.2);
+            // upload_container.setInteractive().on('pointerdown', () => upload_trigger());
+            // this.add.image(50, 50, 'upload')
+
+            // RESET
+            // reset_container = this.add.rectangle(1060, 50, 80, 80, 0xffffff, 0.2);
+            // reset_container.setInteractive().on('pointerdown', () => reset_speed());
+            // this.add.image(1060, 50, 'reset')
+
+            // // FASTER
+            // ff_container = this.add.rectangle(1150, 50, 80, 80, 0xffffff, 0.2);
+            // ff_container.setInteractive().on('pointerdown', () => speedup());
+            // this.add.image(1150, 50, 'ff')
+
+            // // SLOWER
+            // rw_container = this.add.rectangle(970, 50, 80, 80, 0xffffff, 0.2);
+            // rw_container.setInteractive().on('pointerdown', () => slowdown());
+            // this.add.image(970, 50, 'rw')
+
+            // FULL SCREEN
+            // fs_icon = this.add.image(1550, 50, 'fs')
+            // efs_icon = this.add.image(1550, 50, 'efs')
+            // efs_icon.visible = false
+
+            // about_container = this.add.rectangle(1550, 50, 80, 80, 0xffffff, 0.2);
+            // about_container.setInteractive().on('pointerdown', function() {
+            //     if (this.scene.scale.isFullscreen) {
+            //         this.scene.scale.stopFullscreen();
+            //         fs_icon.visible = true;
+            //         efs_icon.visible = false;
+            //     } else {
+            //         this.scene.scale.startFullscreen();
+            //         fs_icon.visible = false;
+            //         efs_icon.visible = true;
+            //     }
+            // });
+
+
+            // SEEK BAR
+            // seeker.setInteractive().on('pointerdown', function (pointer) {
+            //     if (MIDI_LOADED)
+            //     {
+            //         tick = (pointer.worldX / 1600) * (MIDI.durationTicks + 758);
+            //     }
+            // });
+        }
+
+        function fn_place_marker ()
+        {
+            marker = tick.valueOf()
+            marker_set = true;
+        }
+
+        function fn_clear_marker ()
+        {
+            marker_set = false;
+        }
+
+        function back_5 ()
+        {
+            if (MIDI_LOADED)
+            {
+                if (marker_set)
+                {
+                    tick = marker.valueOf()
+                } else {
+                    tick = tick - (5 / MIDI.duration * MIDI.durationTicks);
+                    if (tick < 0) {
+                        tick = 0
+                        if (!PAUSED){
+                            playpause()
+                        }
+                    }
+                }
+            }
+        }
+
+        function fwd_5 ()
+        {
+            if (MIDI_LOADED)
+            {
+                tick = tick + (5 / MIDI.duration * MIDI.durationTicks);
+                if (tick > MIDI.durationTicks) {
+                    tick = MIDI.durationTicks
+                }
+            }
+        }
+
+        function upload_trigger ()
+        {
+            document.getElementById('filereader').click()
+        }
+
+        function load_about ()
+        {
+            document.getElementById('aboutpage').click()
+        }
+
+        function reset_speed ()
+        {
+            TICKRATE = RESET_TICKRATE.valueOf();
+        }
+
+        function speedup ()
+        {
+            TICKRATE = TICKRATE * 1.5;
+        }
+
+        function slowdown ()
+        {
+            TICKRATE = TICKRATE / 1.5;
+        }
+
+        function playpause ()
+        {
+            if (MIDI_LOADED)
+            {
+                PAUSED = !PAUSED;
+
+                if (PAUSED)
+                {
+                    document.getElementById("playpausebtn").src = "play.png";
+                } else {
+                    document.getElementById("playpausebtn").src = "pause.png";
+                }
+            }
+        }
+
+        function update (time, delta)
+        {
+            if (!PAUSED) {
+                tick = tick + (TICKRATE * (delta / 16.67));
+            }
+
+            if (MIDI_LOADED)
+            {
+                graphics.clear();
+
+                // display_tick.setText(Math.round(MIDI.duration / MIDI.durationTicks * tick))
+
+                vn_ak = get_visible_notes_and_active_keys();
+                visible_notes = vn_ak[0]
+                active_keys = vn_ak[1]
+                next_active_keys = vn_ak[2]
+
+                trigger_notes(active_keys)
+
+                falling_notes(visible_notes, next_active_keys);
+                graphics.fillStyle(0x111111, 1);
+                graphics.fillRect(0, 758, 1600, 142)
+
+                just_white();
+
+                graphics.fillStyle(0xa5fed2, 1);
+                active_white(active_keys, visible_notes, next_active_keys);
+
+                just_black();
+
+                graphics.fillStyle(0x62B38A, 1);
+                active_black(active_keys, visible_notes);
+
+                // seek_point = tick / (MIDI.durationTicks + 758) * 1600
+                // graphics.fillStyle(0xffffff, 0.5);
+                // graphics.fillRect(0, 150, seek_point, 3);
+
+                // if (marker_set)
+                // {
+                //     marker_point = marker / (MIDI.durationTicks + 758) * 1600
+
+                //     graphics.fillStyle(0xFFC300, 1); // # FFC300
+                //     graphics.fillRect(marker_point - 8, 100, 8, 100);
+                // }
+
+                if (tick > MIDI.durationTicks + 758)
+                {
+                    if (!PAUSED)
+                    {
+                        playpause();
+                    }
+
+                }
+            }
+        }
+
+
+        function get_visible_notes_and_active_keys()
+        {
+            visible_notes = []
+            active_keys = []
+            next_active_keys = []
+            var track_counter = 0;
+
+            for (track of MIDI.tracks)
+            {
+                for (note of track.notes)
+                {
+                    note["track"] = track_counter;
+
+                    bottom_of_note = tick - note.ticks;
+                    top_of_note = bottom_of_note - note.durationTicks;
+
+                    // if (bottom_of_note > -2000)
+                    if (bottom_of_note > 0)
+                    {
+                        if (top_of_note < 758) {
+                            visible_notes.push(note)
+                        }
+
+                    }
+
+                    if (bottom_of_note > 758)
+                    {
+                        if (top_of_note < 758)
+                        {
+                            active_keys.push(note)
+                            
+                        }
+                    }
+                }
+
+                track_counter ++
+            }
+
+            // WHATS THE CLOSEST TO NEXT BEING PLAYED
+            var closest_note_ticks = false
+            var smallest_distance = {}
+
+            for (note of visible_notes)
+            {
+                if (tick - note.ticks < 758)
+                {
+                    distance = Math.abs(tick - note.ticks - 758)
+
+                    if (note.track in smallest_distance)
+                    {
+                        if (distance < smallest_distance[note.track])
+                        {
+                            smallest_distance[note.track] = distance
+                        }
+                    } else {
+                        smallest_distance[note.track] = distance
+                    }
+                }
+            }
+
+
+            for (note of visible_notes) {
+                note_distance = Math.abs(tick - note.ticks - 758)
+                if (note_distance == smallest_distance[note.track]) {
+                    next_active_keys.push(note)
+                }
+            }
+
+
+            // for (note of visible_notes)
+            // {
+            //     if (tick - note.ticks < 758)
+            //     {
+            //         distance = Math.abs(tick - note.ticks - 758)
+
+            //         if (closest_note_ticks)
+            //         {
+            //             if (distance < closest_note_ticks) {
+            //                 closest_note_ticks = distance
+            //             }
+            //         } else {
+            //             closest_note_ticks = distance
+            //         }
+            //     }
+
+            // }
+
+            // for (note of visible_notes) {
+            //     note_distance = Math.abs(tick - note.ticks - 758)  // if(closest_note_ticks <= note_distance && note_distance < closest_note_ticks*1.1)
+            //     if (note_distance == closest_note_ticks) {
+            //     // if (closest_note_ticks <= note_distance || note_distance < closest_note_ticks*1.1) {
+            //         next_active_keys.push(note)
+            //     }
+            // }
+
+            return [visible_notes, active_keys, next_active_keys];
+        }
+
+        
+
+        function trigger_notes(active_keys)
+        {
+            var difference = new Set()
+
+            if (prev_active_keys) {
+                var act = new Set(active_keys)
+                var pre = new Set(prev_active_keys)
+
+                difference = new Set([...act].filter(x => !pre.has(x)));
+            } else {
+                difference = new Set(active_keys)
+            }
+            prev_active_keys = [...active_keys]
+            
+            if (difference.size > 0)
+            {
+
+                var frequencies_to_play = []
+                var durations_to_play = []
+
+                for (newnote of difference) {
+                    power = (newnote.midi - 69) / 12
+                    frequency = Math.pow(2, power) * 440
+                    frequencies_to_play.push(frequency)
+                    durations_to_play.push(newnote.durationTicks / 60 / TICKRATE)
+                }
+
+                if (!PAUSED){
+                    sampler.triggerAttackRelease(frequencies_to_play, durations_to_play);
+                }
+            }
+        }
+
+        function falling_notes(visible_notes, next_active_keys)
+        {
+            for (note of visible_notes)
+            {
+                the_key = the_keys[note.midi - 21]
+                x = the_key[1];
+                y = tick - note.ticks - note.durationTicks;
+                
+                graphics.fillStyle(colours[note.track][the_key[0]])
+                graphics.fillRect(the_key[1], y, the_key[3], note.durationTicks, 4);
+                // graphics.fillRoundedRect(the_key[1], y, the_key[3], note.durationTicks, 4);
+            }
+        }
+
+        function active_white(active_keys, visible_notes, next_active_keys)
+        {
+            for (key of active_keys)
+            {
+                the_key = the_keys[key.midi - 21]
+
+                if (the_key[0] === 0)
+                {
+                    graphics.fillStyle(colours[key.track][0], 1)
+                    graphics.fillRect(the_key[1], the_key[2], the_key[3], the_key[4]);
+                }
+            }
+
+            for (note of next_active_keys)
+            {
+                the_key = the_keys[note.midi - 21]
+
+                if (the_key[0] === 0)
+                {
+                    the_key = the_keys[note.midi - 21]
+                    x = the_key[1];
+                    y = tick - note.ticks - note.durationTicks;
+
+                    graphics.fillStyle(0xff0000, 1)
+                    graphics.fillRect(the_key[1], 760, the_key[3], 15, 0.2);
+                }
+
+            }
+        }
+
+        function active_black(active_keys, visible_notes)
+        {
+            for (key of active_keys)
+            {
+                the_key = the_keys[key.midi - 21]
+
+                if (the_key[0] === 1)
+                {
+                    graphics.fillStyle(colours[key.track][1])
+                    graphics.fillRect(the_key[1], the_key[2], the_key[3], the_key[4]);
+                }
+            }
+
+            for (note of next_active_keys)
+            {
+                the_key = the_keys[note.midi - 21]
+
+                if (the_key[0] === 1)
+                {
+                    the_key = the_keys[note.midi - 21]
+                    x = the_key[1];
+                    y = tick - note.ticks - note.durationTicks;
+
+                    graphics.fillStyle(0xaa0000, 1)
+                    graphics.fillRect(the_key[1], 760, the_key[3], 15, 0.2);
+                }
+
+            }
+        }
+    </script>
+</body>
+</html>

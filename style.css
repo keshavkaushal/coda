@@ -1,0 +1,60 @@
+@font-face { font-family: Thin; src: url('thin.ttf'); } 
+
+button {
+	position:relative;
+	height:100%;
+	background-color:#555;
+	border: none;
+	margin: 0px 4px;
+	cursor: pointer;
+}
+
+button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.image-upload {
+	display: inline;
+	height: 100%;
+}
+
+img {
+	height: 100%;
+	background: #555555;
+}
+
+#controls {
+	font-family: Thin, sans-serif;
+	position: absolute;
+	background-color: #222;
+	width: 100%;
+	height: 7vh;
+	padding: 8px 0px;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+}
+
+.image-upload>input {
+	display: none;
+}
+
+#seekbar {
+	position: relative;
+	width: 100%;
+	height: 20px;
+	background-color: #000000;
+}
+
+span {
+	color: white;
+    font-family: 'Thin';
+    font-size: 50px;
+    line-height: 50%;
+}
+
+a {
+  color: white;
+  text-decoration: none; /* no underline */
+}
